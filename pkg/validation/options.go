@@ -29,27 +29,10 @@ func Validate(o *options.Options) error {
 	msgs = configureLogger(o.Logging, msgs)
 	msgs = parseSignatureKey(o, msgs)
 
-	if o.SSLInsecureSkipVerify {
-		// InsecureSkipVerify is a configurable option we allow
-		/* #nosec G402 */
-		insecureTransport := &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		}
-		http.DefaultClient = &http.Client{Transport: insecureTransport}
-	} else if len(o.Providers[0].CAFiles) > 0 {
-		pool, err := util.GetCertPool(o.Providers[0].CAFiles)
-		if err == nil {
-			transport := http.DefaultTransport.(*http.Transport).Clone()
-			transport.TLSClientConfig = &tls.Config{
-				RootCAs:    pool,
-				MinVersion: tls.VersionTLS12,
-			}
-
-			http.DefaultClient = &http.Client{Transport: transport}
-		} else {
-			msgs = append(msgs, fmt.Sprintf("unable to load provider CA file(s): %v", err))
-		}
-	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	tlsConfig, msgs := getTLSConfig(o.Providers[0].CAFiles, o.SSLInsecureSkipVerify, msgs)
+	transport.TLSClientConfig = tlsConfig
+	http.DefaultClient = &http.Client{Transport: transport}
 
 	if o.AuthenticatedEmailsFile == "" && len(o.EmailDomains) == 0 && o.HtpasswdFile == "" {
 		msgs = append(msgs, "missing setting for email validation: email-domain or authenticated-emails-file required."+
@@ -183,4 +166,24 @@ func parseURL(toParse string, urltype string, msgs []string) (*url.URL, []string
 			"error parsing %s-url=%q %s", urltype, toParse, err))
 	}
 	return parsed, msgs
+}
+
+func getTLSConfig(caFiles []string, insecureSkipVerify bool, msgs []string) (*tls.Config, []string) {
+	if insecureSkipVerify {
+		// InsecureSkipVerify is a configurable option we allow
+		/* #nosec G402 */
+		return &tls.Config{InsecureSkipVerify: true}, msgs
+	}
+
+	// Return nil so that the client uses the default tls.Config
+	if len(caFiles) == 0 {
+		return nil, msgs
+	}
+
+	pool, err := util.GetCertPool(caFiles)
+	if err != nil {
+		return nil, append(msgs, fmt.Sprintf("unable to load provider CA file(s): %v", err))
+	}
+
+	return &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}, msgs
 }
